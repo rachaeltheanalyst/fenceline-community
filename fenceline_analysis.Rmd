@@ -1,0 +1,349 @@
+---
+title: "Fenceline Community" 
+author: 
+- name: Rachael An
+  affiliation: Smith College
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    fig_width: 9
+    fig_height: 6
+    fig_caption: true
+    theme: cerulean
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  echo = TRUE
+)
+library(tidyverse)
+library(leaflet)
+library(tidycensus)
+library(viridis)
+library(sf)
+library(RColorBrewer)
+```
+# TRI Data Analysis
+```{r tri-import, include=FALSE, message=FALSE, warning=FALSE}
+# Importing the dataset
+tri_2020_tx <- read_csv("datasets/tri_2020_tx.csv", 
+                        name_repair = make.names) %>% 
+  st_as_sf(coords = c("X13..LONGITUDE", "X12..LATITUDE"),
+           crs = 4269) %>%
+  st_transform(4326)
+```
+
+
+```{r tri-summary-table, include=FALSE, message=FALSE, warning=FALSE}
+# Cleaned so each row is a unique facility 
+tri_facility_on_site_totals_county <-
+  tri_2020_tx %>%
+  filter(X7..COUNTY == "BEXAR", X46..UNIT.OF.MEASURE == "Pounds") %>%
+  group_by(X4..FACILITY.NAME, X2..TRIFD) %>%
+  summarize(TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY = sum(X61..ON.SITE.RELEASE.TOTAL))
+```
+
+## Top 10 On-Site Polluters Table 
+Top ten on-site polluters in San Antonio, TX, along with their on-site releases in pounds. 
+
+```{r tri-analysis1, echo=FALSE, message=FALSE, warning=FALSE}
+# Table of top 10 on site polluters
+tri_facility_on_site_totals_county %>%
+  arrange(desc(TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY)) %>%
+  select(X4..FACILITY.NAME, TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY) %>%
+  head(10) 
+```
+## Total On-Site Releases Plot 
+This is a plot of the total on-site releases by medium and by its carcinogenic status. The mediums in which the emissions could be released are by air, water, or land. 
+
+```{r tri-analysis2, echo=FALSE, message=FALSE, warning=FALSE}
+# Creating new columns of air, water, and land
+totals_per_medium_carcinogen_status <-
+  tri_2020_tx %>%
+  filter(X7..COUNTY == "BEXAR", X46..UNIT.OF.MEASURE == "Pounds") %>%
+  select(X2..TRIFD, X34..CHEMICAL, X43..CARCINOGEN, 
+         X47..5.1...FUGITIVE.AIR:X61..ON.SITE.RELEASE.TOTAL) %>% 
+  ## Column of total air releases
+  group_by(X47..5.1...FUGITIVE.AIR, X48..5.2...STACK.AIR, na.rm = TRUE) %>% 
+  mutate(Total_Air = X47..5.1...FUGITIVE.AIR + X48..5.2...STACK.AIR) %>%
+  ungroup() %>%
+  ## Column of total water releases
+  mutate(Total_Water = X49..5.3...WATER) %>%
+  ## Column of total land releases
+  group_by(X50..5.4...UNDERGROUND, 
+           X51..5.4.1...UNDERGROUND.CL.I,
+           X52..5.4.2...UNDERGROUND.C.II.V,
+           X53..5.5.1...LANDFILLS,
+           X54..5.5.1A...RCRA.C.LANDFILL,
+           X55..5.5.1B...OTHER.LANDFILLS,
+           X56..5.5.2...LAND.TREATMENT,
+           X57..5.5.3...SURFACE.IMPNDMNT,
+           X58..5.5.3A...RCRA.SURFACE.IM,
+           X59..5.5.3B...OTHER.SURFACE.I,
+           X60..5.5.4...OTHER.DISPOSAL) %>%
+  mutate(Total_Land = X50..5.4...UNDERGROUND +
+           X51..5.4.1...UNDERGROUND.CL.I +
+           X52..5.4.2...UNDERGROUND.C.II.V +
+           X53..5.5.1...LANDFILLS +
+           X54..5.5.1A...RCRA.C.LANDFILL +
+           X55..5.5.1B...OTHER.LANDFILLS +
+           X56..5.5.2...LAND.TREATMENT +
+           X57..5.5.3...SURFACE.IMPNDMNT +
+           X58..5.5.3A...RCRA.SURFACE.IM +
+           X59..5.5.3B...OTHER.SURFACE.I +
+           X60..5.5.4...OTHER.DISPOSAL) %>%
+  ungroup() %>%
+# Pivoting longer to calculate totals per medium
+  pivot_longer(cols = Total_Air:Total_Land,
+               names_to = "MEDIUM_TYPE",
+               values_to = "TOTALS" ) %>%
+  mutate(MEDIUM_TYPE = str_replace_all(MEDIUM_TYPE, "Total_", "")) %>%
+  mutate(X43..CARCINOGEN = str_replace_all(X43..CARCINOGEN, "YES", "Carcinogenic")) %>%
+  mutate(X43..CARCINOGEN = str_replace_all(X43..CARCINOGEN, "NO", "Non Carcinogenic")) %>%
+  group_by(MEDIUM_TYPE, X43..CARCINOGEN) %>%
+  summarize(TOTALS = sum(TOTALS)) 
+```
+
+```{r tri-analysis_plot, echo=FALSE, message=FALSE, warning=FALSE}
+# Plot
+totals_per_medium_carcinogen_status %>%
+  ggplot(aes(x = MEDIUM_TYPE, y = TOTALS, fill= X43..CARCINOGEN)) +
+  geom_col() +
+  labs(title = "Total On-Site Releases Per Medium Type & Carcinogen Status: Bexar County, TX 2020",
+       x = "Medium Type",
+       y = "Total On-Site Releases (lbs)",
+       fill = "Carcinogen Status") +
+  scale_fill_brewer(palette = "Blues") +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+
+## Top 10 Chemicals Released Table
+Top ten chemicals emitted on-site in Bexar County, TX along with their on-site releases in pounds into the air, water, and land. 
+
+```{r tri-analysis3, echo=FALSE, message=FALSE, warning=FALSE}
+tri_2020_tx_pollution <-
+tri_2020_tx %>%
+  filter(X7..COUNTY == "BEXAR", X46..UNIT.OF.MEASURE == "Pounds") %>% 
+  group_by(X34..CHEMICAL) %>% 
+  summarize(total_chemical_released = sum(X61..ON.SITE.RELEASE.TOTAL),
+            total_air_pollution =
+              sum(X48..5.2...STACK.AIR + 
+                    X47..5.1...FUGITIVE.AIR), 
+            total_water_pollution = sum(X49..5.3...WATER),
+            total_land_pollution = 
+              sum(X50..5.4...UNDERGROUND +
+                    X51..5.4.1...UNDERGROUND.CL.I +
+                    X52..5.4.2...UNDERGROUND.C.II.V +
+                    X53..5.5.1...LANDFILLS +
+                    X54..5.5.1A...RCRA.C.LANDFILL +
+                    X55..5.5.1B...OTHER.LANDFILLS +
+                    X56..5.5.2...LAND.TREATMENT +
+                    X57..5.5.3...SURFACE.IMPNDMNT +
+                    X58..5.5.3A...RCRA.SURFACE.IM +
+                    X59..5.5.3B...OTHER.SURFACE.I +
+                    X60..5.5.4...OTHER.DISPOSAL)) %>%
+  arrange(desc(total_chemical_released)) %>%
+  top_n(10, total_chemical_released)
+
+tri_2020_tx_pollution
+```
+
+# 2020 US Census Data Analysis
+We are adopting the EJ Screen approach which looks at national scale environmental justice concerns. 
+
+```{r census-import, include=FALSE, message=FALSE, warning=FALSE}
+  
+census_block_groups <- get_decennial(geography = "block group", variables = "P2_005N", year = 2020, state = 48, county = 029, geometry = TRUE, summary_var = "P1_001N")
+  
+census_tracts <- get_decennial(geography = "tract", variables = "P2_005N", year= 2020, state = 48, county = 029, geometry = TRUE, summary_var = "P1_001N")
+  
+
+```
+
+
+```{r census-wrangle, include=FALSE, message=FALSE, warning=FALSE}
+census_block_groups <-
+  census_block_groups %>%
+ mutate(percentage_people_of_color = (summary_value - value) / summary_value *100) 
+  Block_groups <- unique("GEOID")
+
+census_tracts <-
+  census_tracts %>%
+  mutate(percentage_people_of_color = (summary_value - value) / summary_value *100)
+
+```
+## Percentage of People of Color Plot 
+
+```{r census-distribution, echo=FALSE, message=FALSE, warning=FALSE}
+census_block_groups %>%
+  ggplot(aes(x = percentage_people_of_color))+
+  geom_histogram(color= "white", fill = "light blue") +
+  labs(title = "Distribution of Individuals' Demographics across Block Groups in Bexar County, TX 2020 Census",
+       x= "Percentage of Individuals of Color",
+       y= "Number of Block Groups") 
+```
+
+```{r health-import, include=FALSE, message=FALSE, warning=FALSE}
+health_data_tracts <-
+  read_csv("https://chronicdata.cdc.gov/resource/cwsq-ngmh.csv?$where=StateAbbr=%27TX%27%20AND%20CountyName=%27Bexar%27%20AND%20Short_Question_Text=%27Coronary%20Heart%20Disease%27")
+
+census_tracts <-
+  census_tracts %>%
+  mutate(GEOID = as.numeric(GEOID))
+
+health_data_tracts_census <- 
+  census_tracts %>%
+  inner_join(health_data_tracts, by = c("GEOID" = "locationid"))
+```
+
+## Health and Census Data Plot
+
+```{r health-demographic-plots, echo=FALSE, message=FALSE, warning=FALSE}
+health_data_tracts_census %>%
+  ggplot(aes(x = data_value, y = percentage_people_of_color)) +
+  geom_point(color = "dark blue", size = 1, alpha = .5) +
+  labs(title = "The Relationship Between Coronary Heart Disease Among Adults and People of Color 
+       in Each Census Tract in Bexar County Texas, 2020 Census & 2019 CDC",
+       x = "Percent of Coronary Heart Disease Among Adults (18 and Older)",
+       y = "Percent of People of Color") +
+  geom_smooth(color="light blue") + 
+  theme_minimal() 
+
+```
+
+
+```{r redlining-import, include=FALSE, message=FALSE, warning=FALSE}
+redlining <- st_read("datasets/TXSanAntonio19XX/cartodb-query.shp") %>%
+  st_transform(4326)
+```
+
+# Maps!
+## Map of Emissions & Census Data
+This is a map of the total emissions per facility in pounds, and the percentage of People of Color by Census block groups. This is a map of Bexar County, TX including data from the 2020 Census. 
+
+```{r census-map, echo=FALSE, message=FALSE, warning=FALSE}
+pal_tri_bin <- colorBin(palette="BuPu", 
+                           n = 5, 
+                           domain =                            tri_facility_on_site_totals_county$TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY)
+
+pal_census_bin <- colorBin(palette = "Oranges", 
+                          domain = census_block_groups$percentage_people_of_color)
+
+pal_layered_map <-
+  leaflet("width = 100%") %>%
+  setView(lat = 29.4252, lng = -98.4946, zoom = 10) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(data = census_block_groups,
+              fillColor = ~pal_census_bin(percentage_people_of_color), 
+              stroke = FALSE,
+              fillOpacity = 0.5) %>%
+  addCircleMarkers(data = tri_facility_on_site_totals_county, 
+                   fillColor = ~pal_tri_bin(TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY),
+                   color = "black",
+                   radius = 4,
+                   weight = 0.5,
+                   fillOpacity = 0.7,
+                   label = ~X4..FACILITY.NAME) %>%
+  addLegend(position = "topright",
+            pal = pal_census_bin,
+            values = census_block_groups$percentage_people_of_color,
+            title = "Percentage of People of Color") %>%
+  addLegend(position = "bottomright",
+            pal = pal_tri_bin,
+            values = tri_facility_on_site_totals_county$TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY,
+            title = "Total Emissions (lbs)")
+
+pal_layered_map
+```
+
+## Map of Emissions & Health Data
+This is a map of the total emissions per facility in pounds, and the percentage of adults (18 years and older) with coronary heart disease by census tracts. It is of Bexar County, TX including data from the CDC in 2019 and the 2020 Census. 
+
+```{r health-map, echo=FALSE, message=FALSE, warning=FALSE}
+pal_tri_bin <- colorBin(palette="BuPu", 
+                           n = 7, 
+                           domain =                            tri_facility_on_site_totals_county$TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY)
+
+pal_health_bin <- colorBin(palette = "Set2", 
+                          domain = health_data_tracts_census$data_value)
+
+pal_full_map2 <-
+  leaflet("width = 100%") %>%
+  setView(lat = 29.4252, lng = -98.4946, zoom = 10) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(data = health_data_tracts_census,
+              fillColor = ~pal_health_bin(data_value), 
+              stroke = FALSE,
+              fillOpacity = 0.7) %>%
+  addCircleMarkers(data = tri_facility_on_site_totals_county, 
+                   fillColor = ~pal_tri_bin(TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY),
+                   radius = 4,
+                   color = "black",
+                   fillOpacity = 0.7,
+                   weight = 0.5,
+                   label = ~X4..FACILITY.NAME) %>%
+  addLegend(position = "topright",
+            pal = pal_health_bin,
+            values = health_data_tracts_census$data_value,
+            title = "Percent of Coronary Heart Disease") %>%
+  addLegend(position = "bottomright",
+            pal = pal_tri_bin,
+            values = tri_facility_on_site_totals_county$TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY,
+            title = "Total Emissions (lbs)")
+pal_full_map2
+```
+## Map of Emissions & Redlining Data
+This is a map of the total emissions per facility in pounds, and the HOLC grade of areas in San Antonio, TX. 
+
+```{r redlining-map, echo=FALSE, message=FALSE, warning=FALSE}
+# Emissions per facility layer
+
+# Renaming the holc_grade so that they are more understandable
+redlining <-
+  redlining %>%
+  mutate(holc_grade = recode(holc_grade, A = "A: Best", B = "B: Still Desirable", C = "C: Definitely Declining", D = "D: Hazardous"))
+
+pal_redlining_factor2 <- colorFactor(palette = c("green", "blue", "yellow", "red"),
+                      domain = redlining$holc_grade)
+  
+#Map here
+emissions_redlining_map <-
+  leaflet("width = 100%") %>%
+  setView(lat = 29.4252, lng = -98.4946, zoom = 12) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(data = redlining, 
+              fillColor = ~pal_redlining_factor2(holc_grade),
+              stroke = FALSE,
+              fillOpacity = 0.5) %>%
+  addCircleMarkers(data = tri_facility_on_site_totals_county, 
+                   fillColor = ~pal_tri_bin(TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY),
+                   color = "black",
+                   radius = 5,
+                   weight = 2,
+                   fillOpacity = .8,
+                   label = ~X4..FACILITY.NAME) %>%
+  addLegend(position = "bottomright",
+            pal = pal_redlining_factor2,
+            values = redlining$holc_grade,
+            title = "Redlining HOLC Grade") %>%
+  addLegend(position = "topright",
+            pal = pal_tri_bin,
+            values = tri_facility_on_site_totals_county$TOTAL_ON_SITE_EMMISSIONS_PER_FACILITY,
+            title = "Total Emissions (lbs)") 
+  
+emissions_redlining_map
+```
+
+# Report
+
+  I chose to analyze Bexar county in Texas. After analyzing the “Who Is In Danger” data table, I found that the amount of facilities and the chemicals they were producing to be concerning. Producing high quantities of chemicals such as: Chlorine, Ammonia, and Sulfur Dioxide. These chemicals can be dispersed through air, water, and land. Due to these concerning amounts, I first wanted to identify the most polluting facilities and the extent of the chemicals they were emitting. Then, I wanted to analyze the communities within a dangerous range of these factories and the distribution and differences of health data amongst these communities. The health of the communities in Bexar county, Texas was measured with Coronary Heart Disease being the indicator. Furthermore, I wanted to analyze the distribution of People of Color in these communities to see if exposure to these harsh chemicals is disproportionately affecting marginalized groups. 
+  
+  I found that the most common release medium of emissions was air and land, with more than 75% of the total on-site releases being non-carcinogenic. However, the top 10 of those chemicals being dispersed was: barium compounds (except for barium sulfate (CAS No. 7727-43-7)),toluene, ammonia, manganese compounds, lead and lead compounds, n-butyl alcohol, zinc compounds, certain glycol ethers, 1,2,4-trimethylbenzene, and copper. I then did some geospatial analysis with maps. No conclusive correlations were found when plotting the percentage of People of Color in comparison to the total emissions in the county. However, after mapping the coronary heart disease data with the total emissions in the county, I drew some connections. The area surrounding San Antonio’s emission “hotspot” has higher amounts of coronary heart disease. Furthermore, the rates of heart disease get worse near large clusters of emission producing facilities.
+	 
+  An ethical concern that we should consider is about data privacy. Even though all of this data is publicly accessible, it can still violate people’s right to privacy. I was able to import data from the U.S. census by census tract and block group. These are very specific measurements of area. The more specific our lens is, the easier it is to identify the people who we are analyzing. We are also analyzing very private and personal health indicators such as heart disease, cancer, binge drinking etc. These data sets can do real harm to people, by having their data easily identifiable. 
